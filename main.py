@@ -1,14 +1,126 @@
 import io
 import re
 from fastapi import FastAPI, File, UploadFile, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, HTMLResponse
 import pdfplumber
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment
 from openpyxl.worksheet.datavalidation import DataValidation
 
-app = FastAPI(title="PDF to Dynamic Excel Converter")
+app = FastAPI(title="PDF to Master Sheet Converter")
 
+# -------------------------------------------------------------
+# 🎨 WEB UI INTERFACE (HTML/CSS)
+# -------------------------------------------------------------
+HTML_PAGE = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PDF to Dynamic Master Sheet Converter</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #eef2f5; color: #333; display: flex; justify-content: center; align-items: center; min-height: 100vh; padding: 20px; }
+        .card { background: #ffffff; width: 100%; max-width: 500px; padding: 30px; border-radius: 12px; box-shadow: 0 4px 20px rgba(0,0,0,0.1); text-align: center; }
+        h2 { color: #1f4e79; margin-bottom: 8px; font-size: 22px; }
+        p { color: #666; font-size: 13px; margin-bottom: 24px; }
+        .upload-area { border: 2px dashed #007bff; border-radius: 8px; padding: 30px 20px; background: #f8faff; cursor: pointer; transition: 0.3s; margin-bottom: 20px; }
+        .upload-area:hover { background: #eaf2ff; }
+        .file-input { display: none; }
+        .icon { font-size: 40px; color: #007bff; margin-bottom: 10px; }
+        .btn { width: 100%; padding: 12px; background: #28a745; color: white; border: none; border-radius: 6px; font-size: 15px; font-weight: bold; cursor: pointer; transition: 0.3s; }
+        .btn:hover { background: #218838; }
+        .btn:disabled { background: #ccc; cursor: not-allowed; }
+        #file-name { margin-top: 10px; font-size: 12px; font-weight: bold; color: #007bff; }
+        .spinner { display: none; margin: 15px auto 0; border: 4px solid #f3f3f3; border-top: 4px solid #007bff; border-radius: 50%; width: 30px; height: 30px; animation: spin 1s linear infinite; }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+    </style>
+</head>
+<body>
+
+    <div class="card">
+        <h2>📄 PDF to Master Sheet</h2>
+        <p>100-Page PDF Upload Karein & Dynamic Excel Template Download Karein</p>
+
+        <form id="uploadForm">
+            <div class="upload-area" onclick="document.getElementById('pdfFile').click()">
+                <div class="icon">📁</div>
+                <div style="font-weight: bold; font-size: 14px;">Select or Drag PDF File Here</div>
+                <div id="file-name">No file selected</div>
+            </div>
+            <input type="file" id="pdfFile" class="file-input" accept=".pdf" onchange="showFileName()" required>
+            
+            <button type="submit" id="submitBtn" class="btn">⚡ Convert & Download Excel</button>
+        </form>
+
+        <div id="spinner" class="spinner"></div>
+    </div>
+
+    <script>
+        function showFileName() {
+            const input = document.getElementById('pdfFile');
+            const fileNameDiv = document.getElementById('file-name');
+            if (input.files.length > 0) {
+                fileNameDiv.innerText = "Selected: " + input.files[0].name;
+            }
+        }
+
+        document.getElementById('uploadForm').addEventListener('submit', async function(e) {
+            e.preventDefault();
+            const fileInput = document.getElementById('pdfFile');
+            if (fileInput.files.length === 0) return;
+
+            const submitBtn = document.getElementById('submitBtn');
+            const spinner = document.getElementById('spinner');
+
+            submitBtn.disabled = true;
+            submitBtn.innerText = "Processing PDF...";
+            spinner.style.display = "block";
+
+            const formData = new FormData();
+            formData.append("file", fileInput.files[0]);
+
+            try {
+                const response = await fetch("/convert-pdf/", {
+                    method: "POST",
+                    body: formData
+                });
+
+                if (!response.ok) {
+                    throw new Error("Conversion failed!");
+                }
+
+                const blob = await response.blob();
+                const downloadUrl = window.URL.createObjectURL(blob);
+                const a = document.createElement("a");
+                a.href = downloadUrl;
+                a.download = fileInput.files[0].name.replace(".pdf", "_MasterDashboard.xlsx");
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
+
+            } catch (err) {
+                alert("Error processing PDF file. Please try again.");
+            } finally {
+                submitBtn.disabled = false;
+                submitBtn.innerText = "⚡ Convert & Download Excel";
+                spinner.style.display = "none";
+            }
+        });
+    </script>
+</body>
+</html>
+"""
+
+@app.get("/", response_class=HTMLResponse)
+def serve_ui():
+    """Serves the Web UI for uploading PDFs directly from the browser."""
+    return HTML_PAGE
+
+# -------------------------------------------------------------
+# ⚙️ PDF PARSING & EXCEL ENGINE
+# -------------------------------------------------------------
 def parse_pdf_text(text: str, page_num: int) -> dict:
     row_data = {"Page_No": page_num}
     patterns = {
@@ -35,10 +147,6 @@ def parse_pdf_text(text: str, page_num: int) -> dict:
             row_data[key] = 0 if key in ["Quantity", "Unit_Price", "Discount_Pct", "GST_Pct"] else ""
             
     return row_data
-
-@app.get("/")
-def home():
-    return {"status": "Online", "message": "PDF to Master Sheet API is Active"}
 
 @app.post("/convert-pdf/")
 async def convert_pdf(file: UploadFile = File(...)):
