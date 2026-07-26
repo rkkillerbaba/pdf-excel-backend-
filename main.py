@@ -195,20 +195,17 @@ async def convert_pdf(file: UploadFile = File(...)):
         wb = openpyxl.Workbook()
         
         # -------------------------------------------------------------
-        # 👑 STYLING PALETTE (Corporate Executive Theme)
+        # 👑 STYLING PALETTE
         # -------------------------------------------------------------
         font_family = "Segoe UI"
         
         navy_header_fill = PatternFill(start_color="1B365D", end_color="1B365D", fill_type="solid")
         card_label_fill = PatternFill(start_color="F0F4F8", end_color="F0F4F8", fill_type="solid")
         accent_green_fill = PatternFill(start_color="E6F4EA", end_color="E6F4EA", fill_type="solid")
-        dropdown_cell_fill = PatternFill(start_color="E8F0FE", end_color="E8F0FE", fill_type="solid")
         
         white_banner_font = Font(name=font_family, size=13, bold=True, color="FFFFFF")
         label_bold_font = Font(name=font_family, size=10, bold=True, color="333333")
-        value_regular_font = Font(name=font_family, size=10, bold=False, color="111111")
         payable_bold_font = Font(name=font_family, size=12, bold=True, color="1E7E34")
-        dropdown_font = Font(name=font_family, size=11, bold=True, color="1A73E8")
 
         thin_side = Side(border_style="thin", color="D1D5DB")
         thick_green_side = Side(border_style="medium", color="28A745")
@@ -217,13 +214,13 @@ async def convert_pdf(file: UploadFile = File(...)):
         payable_border = Border(left=thick_green_side, right=thick_green_side, top=thick_green_side, bottom=thick_green_side)
 
         # -------------------------------------------------------------
-        # 1. PAGEVIEWER TAB (DESIGNER FRONT DASHBOARD)
+        # 1. PAGEVIEWER TAB
         # -------------------------------------------------------------
         ws_view = wb.active
         ws_view.title = "PageViewer"
         ws_view.views.sheetView[0].showGridLines = True
 
-        # Header Title Banner
+        # Header Banner
         ws_view.merge_cells("B2:D2")
         ws_view["B2"] = "INVOICE DATA EXECUTIVE DASHBOARD"
         ws_view["B2"].font = white_banner_font
@@ -231,25 +228,32 @@ async def convert_pdf(file: UploadFile = File(...)):
         ws_view["B2"].alignment = Alignment(horizontal="center", vertical="center")
         ws_view.row_dimensions[2].height = 35
 
-        # Dropdown Selector Row
+        # Dropdown Cell Setup with High Contrast
         ws_view["B4"] = "Select Page No:"
         ws_view["B4"].font = label_bold_font
         ws_view["B4"].alignment = Alignment(horizontal="right", vertical="center")
         
         ws_view["C4"] = 1
-        ws_view["C4"].font = dropdown_font
-        ws_view["C4"].fill = dropdown_cell_fill
+        ws_view["C4"].font = Font(name=font_family, size=11, bold=True, color="007BFF")
+        ws_view["C4"].fill = PatternFill(start_color="FFFFFF", end_color="FFFFFF", fill_type="solid")
         ws_view["C4"].alignment = Alignment(horizontal="center", vertical="center")
-        ws_view["C4"].border = card_border
+        ws_view["C4"].border = Border(
+            left=Side(style="medium", color="007BFF"),
+            right=Side(style="medium", color="007BFF"),
+            top=Side(style="medium", color="007BFF"),
+            bottom=Side(style="medium", color="007BFF")
+        )
         ws_view.row_dimensions[4].height = 25
 
-        # Dropdown Binding Logic
-        total_rows = len(pages_data) + 1
-        dv = DataValidation(type="list", formula1=f"=DataSheet!$A$2:$A${total_rows}", allow_blank=False)
+        # Forced Dropdown Binding
+        page_numbers_list = ",".join(str(i) for i in range(1, len(pages_data) + 1))
+        dv = DataValidation(type="list", formula1=f'"{page_numbers_list}"', allow_blank=False, showDropDown=True)
+        dv.error = 'Kripya list se valid Page Number select karein!'
+        dv.errorTitle = 'Invalid Page'
         ws_view.add_data_validation(dv)
         dv.add(ws_view["C4"])
 
-        # Template Form Field Configuration
+        # Form Rows
         calc_rows = [
             ("Customer Name", '=XLOOKUP(C4, DataSheet!A:A, DataSheet!B:B, "N/A")', "@"),
             ("Product Name", '=XLOOKUP(C4, DataSheet!A:A, DataSheet!C:C, "N/A")', "@"),
@@ -267,14 +271,12 @@ async def convert_pdf(file: UploadFile = File(...)):
         for label, formula, num_format in calc_rows:
             ws_view.row_dimensions[row_idx].height = 22
             
-            # Label Cell (Col B)
             ws_view[f"B{row_idx}"] = label
             ws_view[f"B{row_idx}"].font = label_bold_font
             ws_view[f"B{row_idx}"].fill = card_label_fill
             ws_view[f"B{row_idx}"].border = card_border
             ws_view[f"B{row_idx}"].alignment = Alignment(horizontal="left", vertical="center", indent=1)
 
-            # Value/Formula Cell (Col C)
             ws_view.merge_cells(f"C{row_idx}:D{row_idx}")
             cell = ws_view[f"C{row_idx}"]
             cell.value = formula
@@ -292,14 +294,13 @@ async def convert_pdf(file: UploadFile = File(...)):
 
             row_idx += 1
 
-        # Column Width Padding
         ws_view.column_dimensions['A'].width = 3
         ws_view.column_dimensions['B'].width = 24
         ws_view.column_dimensions['C'].width = 20
         ws_view.column_dimensions['D'].width = 20
 
         # -------------------------------------------------------------
-        # 2. DATASHEET TAB (BACKEND MASTER DATASET)
+        # 2. DATASHEET TAB
         # -------------------------------------------------------------
         ws_data = wb.create_sheet(title="DataSheet")
         ws_data.views.sheetView[0].showGridLines = True
@@ -311,7 +312,6 @@ async def convert_pdf(file: UploadFile = File(...)):
         ]
         ws_data.append(headers)
 
-        # Style Header Row
         ws_data.row_dimensions[1].height = 26
         for col_num, header in enumerate(headers, 1):
             cell = ws_data.cell(row=1, column=col_num)
@@ -319,7 +319,6 @@ async def convert_pdf(file: UploadFile = File(...)):
             cell.fill = navy_header_fill
             cell.alignment = Alignment(horizontal="center", vertical="center")
 
-        # Append Rows with Number Formatting
         for idx, item in enumerate(pages_data, start=2):
             ws_data.append([
                 item["Page_No"], item["Customer_Name"], item["Product"],
@@ -329,14 +328,12 @@ async def convert_pdf(file: UploadFile = File(...)):
             ])
             
             ws_data.row_dimensions[idx].height = 20
-            # Apply Number Formatting to Columns
             ws_data[f"E{idx}"].number_format = "₹#,##0.00"
             ws_data[f"F{idx}"].number_format = "₹#,##0.00"
             ws_data[f"H{idx}"].number_format = "₹#,##0.00"
             ws_data[f"I{idx}"].number_format = "₹#,##0.00"
             ws_data[f"J{idx}"].number_format = "₹#,##0.00"
 
-        # Auto-adjust column widths for DataSheet
         for col in ws_data.columns:
             max_len = max(len(str(cell.value or '')) for cell in col)
             col_letter = openpyxl.utils.get_column_letter(col[0].column)
