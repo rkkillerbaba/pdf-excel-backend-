@@ -5,9 +5,13 @@ from fastapi.responses import StreamingResponse, HTMLResponse
 import pdfplumber
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment
+from openpyxl.worksheet.datavalidation import DataValidation
 
-app = FastAPI(title="Exact PDF Data to Excel Converter")
+app = FastAPI(title="Exact PDF Data to Master Sheet Converter")
 
+# -------------------------------------------------------------
+# 🎨 WEB UI INTERFACE
+# -------------------------------------------------------------
 HTML_PAGE = """
 <!DOCTYPE html>
 <html lang="en">
@@ -36,7 +40,7 @@ HTML_PAGE = """
 <body>
     <div class="card">
         <h2>📄 Bulk PDF Data Extractor</h2>
-        <p>PDF Upload Karein aur Exact Table Data Ko Excel Me Convert Karein</p>
+        <p>PDF Upload Karein & Master Excel Template Download Karein</p>
         <form id="uploadForm">
             <div class="upload-area" onclick="document.getElementById('pdfFile').click()">
                 <div class="icon">📁</div>
@@ -81,7 +85,7 @@ HTML_PAGE = """
                 const downloadUrl = window.URL.createObjectURL(blob);
                 const a = document.createElement("a");
                 a.href = downloadUrl;
-                a.download = fileInput.files[0].name.replace(".pdf", "_ExtractedData.xlsx");
+                a.download = fileInput.files[0].name.replace(".pdf", "_Extracted.xlsx");
                 document.body.appendChild(a);
                 a.click();
                 a.remove();
@@ -102,12 +106,14 @@ HTML_PAGE = """
 def serve_ui():
     return HTML_PAGE
 
+# -------------------------------------------------------------
+# ⚙️ EXTRACTION & HELPER FUNCTIONS
+# -------------------------------------------------------------
 def extract_clean_number(val_str: str) -> float:
-    """Helper function to extract clean numbers from strings like '₹1,500 (3 × ₹500)'"""
+    """Extracts numeric float values while stripping formulas/symbols (e.g. '₹1,500 (3 × ₹500)' -> 1500.0)"""
     if not val_str:
         return 0.0
-    # Clean string to get the main amount
-    main_part = val_str.split('(')[0] # Extract before formula bracket
+    main_part = val_str.split('(')[0]
     clean_str = re.sub(r"[^\d.]", "", main_part)
     try:
         return float(clean_str)
@@ -129,7 +135,6 @@ def parse_exact_pdf_page(page, page_num: int) -> dict:
         "Description": ""
     }
 
-    # Extract tables from page
     tables = page.extract_tables()
     
     if tables:
@@ -161,7 +166,6 @@ def parse_exact_pdf_page(page, page_num: int) -> dict:
                     elif "description" in field:
                         row_data["Description"] = val
     else:
-        # Text-based fallback parsing if table borders are missing
         text = page.extract_text() or ""
         lines = text.split("\n")
         for line in lines:
@@ -181,6 +185,9 @@ def parse_exact_pdf_page(page, page_num: int) -> dict:
 
     return row_data
 
+# -------------------------------------------------------------
+# 🚀 FASTAPI CONVERT ROUTE
+# -------------------------------------------------------------
 @app.post("/convert-pdf/")
 async def convert_pdf(file: UploadFile = File(...)):
     if not file.filename.endswith('.pdf'):
@@ -197,7 +204,7 @@ async def convert_pdf(file: UploadFile = File(...)):
         
         wb = openpyxl.Workbook()
         
-        # 1. PageViewer Sheet (Template View)
+        # 1. PageViewer Sheet (Interactive Dashboard)
         ws_view = wb.active
         ws_view.title = "PageViewer"
         ws_view.views.sheetView[0].showGridLines = True
@@ -218,6 +225,16 @@ async def convert_pdf(file: UploadFile = File(...)):
         ws_view["B3"].font = label_font
         ws_view["C3"] = 1
         ws_view["C3"].font = Font(size=12, bold=True, color="007BFF")
+
+        # Dynamic Dropdown Binding (Fix for Cell C3)
+        total_rows = len(pages_data) + 1
+        dv = DataValidation(
+            type="list", 
+            formula1=f"=DataSheet!$A$2:$A${total_rows}", 
+            allow_blank=False
+        )
+        ws_view.add_data_validation(dv)
+        dv.add(ws_view["C3"])
 
         calc_rows = [
             ("Customer Name", '=XLOOKUP(C3, DataSheet!A:A, DataSheet!B:B, "N/A")'),
