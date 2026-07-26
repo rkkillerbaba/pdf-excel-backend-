@@ -5,13 +5,9 @@ from fastapi.responses import StreamingResponse, HTMLResponse
 import pdfplumber
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment
-from openpyxl.worksheet.datavalidation import DataValidation
 
-app = FastAPI(title="PDF to Master Sheet Converter")
+app = FastAPI(title="Exact PDF Data to Excel Converter")
 
-# -------------------------------------------------------------
-# 🎨 WEB UI INTERFACE (HTML/CSS)
-# -------------------------------------------------------------
 HTML_PAGE = """
 <!DOCTYPE html>
 <html lang="en">
@@ -38,22 +34,18 @@ HTML_PAGE = """
     </style>
 </head>
 <body>
-
     <div class="card">
-        <h2>📄 PDF to Master Sheet</h2>
-        <p>100-Page PDF Upload Karein & Dynamic Excel Template Download Karein</p>
-
+        <h2>📄 Bulk PDF Data Extractor</h2>
+        <p>PDF Upload Karein aur Exact Table Data Ko Excel Me Convert Karein</p>
         <form id="uploadForm">
             <div class="upload-area" onclick="document.getElementById('pdfFile').click()">
                 <div class="icon">📁</div>
-                <div style="font-weight: bold; font-size: 14px;">Select or Drag PDF File Here</div>
+                <div style="font-weight: bold; font-size: 14px;">Select PDF File</div>
                 <div id="file-name">No file selected</div>
             </div>
             <input type="file" id="pdfFile" class="file-input" accept=".pdf" onchange="showFileName()" required>
-            
-            <button type="submit" id="submitBtn" class="btn">⚡ Convert & Download Excel</button>
+            <button type="submit" id="submitBtn" class="btn">⚡ Convert PDF to Excel</button>
         </form>
-
         <div id="spinner" class="spinner"></div>
     </div>
 
@@ -75,36 +67,29 @@ HTML_PAGE = """
             const spinner = document.getElementById('spinner');
 
             submitBtn.disabled = true;
-            submitBtn.innerText = "Processing PDF...";
+            submitBtn.innerText = "Extracting Exact Data...";
             spinner.style.display = "block";
 
             const formData = new FormData();
             formData.append("file", fileInput.files[0]);
 
             try {
-                const response = await fetch("/convert-pdf/", {
-                    method: "POST",
-                    body: formData
-                });
-
-                if (!response.ok) {
-                    throw new Error("Conversion failed!");
-                }
+                const response = await fetch("/convert-pdf/", { method: "POST", body: formData });
+                if (!response.ok) throw new Error("Conversion failed!");
 
                 const blob = await response.blob();
                 const downloadUrl = window.URL.createObjectURL(blob);
                 const a = document.createElement("a");
                 a.href = downloadUrl;
-                a.download = fileInput.files[0].name.replace(".pdf", "_MasterDashboard.xlsx");
+                a.download = fileInput.files[0].name.replace(".pdf", "_ExtractedData.xlsx");
                 document.body.appendChild(a);
                 a.click();
                 a.remove();
-
             } catch (err) {
-                alert("Error processing PDF file. Please try again.");
+                alert("Error extracting PDF data.");
             } finally {
                 submitBtn.disabled = false;
-                submitBtn.innerText = "⚡ Convert & Download Excel";
+                submitBtn.innerText = "⚡ Convert PDF to Excel";
                 spinner.style.display = "none";
             }
         });
@@ -115,37 +100,85 @@ HTML_PAGE = """
 
 @app.get("/", response_class=HTMLResponse)
 def serve_ui():
-    """Serves the Web UI for uploading PDFs directly from the browser."""
     return HTML_PAGE
 
-# -------------------------------------------------------------
-# ⚙️ PDF PARSING & EXCEL ENGINE
-# -------------------------------------------------------------
-def parse_pdf_text(text: str, page_num: int) -> dict:
-    row_data = {"Page_No": page_num}
-    patterns = {
-        "Customer_Name": r"Customer Name:\s*(.*)",
-        "Product": r"Product:\s*(.*)",
-        "Quantity": r"Quantity:\s*(\d+)",
-        "Unit_Price": r"Unit Price:\s*(?:Rs\.|₹)?\s*([\d\.]+)",
-        "Discount_Pct": r"Discount:\s*([\d\.]+)\%?",
-        "GST_Pct": r"GST Rate:\s*([\d\.]+)\%?",
-        "Description": r"Description:\s*(.*)"
+def extract_clean_number(val_str: str) -> float:
+    """Helper function to extract clean numbers from strings like '₹1,500 (3 × ₹500)'"""
+    if not val_str:
+        return 0.0
+    # Clean string to get the main amount
+    main_part = val_str.split('(')[0] # Extract before formula bracket
+    clean_str = re.sub(r"[^\d.]", "", main_part)
+    try:
+        return float(clean_str)
+    except:
+        return 0.0
+
+def parse_exact_pdf_page(page, page_num: int) -> dict:
+    row_data = {
+        "Page_No": page_num,
+        "Customer_Name": "",
+        "Product": "",
+        "Quantity": 0,
+        "Unit_Price": 0.0,
+        "Base_Amount": 0.0,
+        "Discount": "",
+        "Taxable_Amount": 0.0,
+        "GST": 0.0,
+        "Net_Total": 0.0,
+        "Description": ""
     }
+
+    # Extract tables from page
+    tables = page.extract_tables()
     
-    for key, pattern in patterns.items():
-        match = re.search(pattern, text, re.IGNORECASE)
-        if match:
-            val = match.group(1).strip()
-            if key == "Quantity":
-                row_data[key] = int(val)
-            elif key in ["Unit_Price", "Discount_Pct", "GST_Pct"]:
-                row_data[key] = float(val)
-            else:
-                row_data[key] = val
-        else:
-            row_data[key] = 0 if key in ["Quantity", "Unit_Price", "Discount_Pct", "GST_Pct"] else ""
-            
+    if tables:
+        for table in tables:
+            for row in table:
+                if len(row) >= 2 and row[0] and row[1]:
+                    field = str(row[0]).replace("\n", " ").strip().lower()
+                    val = str(row[1]).replace("\n", " ").strip()
+                    
+                    if "customer" in field:
+                        row_data["Customer_Name"] = val
+                    elif "product" in field:
+                        row_data["Product"] = val
+                    elif "quantity" in field:
+                        try: row_data["Quantity"] = int(re.sub(r"[^\d]", "", val))
+                        except: pass
+                    elif "unit price" in field:
+                        row_data["Unit_Price"] = extract_clean_number(val)
+                    elif "base amount" in field:
+                        row_data["Base_Amount"] = extract_clean_number(val)
+                    elif "discount" in field:
+                        row_data["Discount"] = val
+                    elif "taxable" in field:
+                        row_data["Taxable_Amount"] = extract_clean_number(val)
+                    elif "gst" in field:
+                        row_data["GST"] = extract_clean_number(val)
+                    elif "money received" in field or "net total" in field:
+                        row_data["Net_Total"] = extract_clean_number(val)
+                    elif "description" in field:
+                        row_data["Description"] = val
+    else:
+        # Text-based fallback parsing if table borders are missing
+        text = page.extract_text() or ""
+        lines = text.split("\n")
+        for line in lines:
+            if "|" in line or ":" in line:
+                parts = re.split(r"[:|]", line, 1)
+                if len(parts) == 2:
+                    field = parts[0].strip().lower()
+                    val = parts[1].strip()
+                    
+                    if "customer" in field: row_data["Customer_Name"] = val
+                    elif "product" in field: row_data["Product"] = val
+                    elif "quantity" in field:
+                        try: row_data["Quantity"] = int(re.sub(r"[^\d]", "", val))
+                        except: pass
+                    elif "unit price" in field: row_data["Unit_Price"] = extract_clean_number(val)
+                    elif "description" in field: row_data["Description"] = val
+
     return row_data
 
 @app.post("/convert-pdf/")
@@ -160,12 +193,11 @@ async def convert_pdf(file: UploadFile = File(...)):
         
         with pdfplumber.open(pdf_file) as pdf:
             for i, page in enumerate(pdf.pages, start=1):
-                text = page.extract_text() or ""
-                pages_data.append(parse_pdf_text(text, i))
+                pages_data.append(parse_exact_pdf_page(page, i))
         
         wb = openpyxl.Workbook()
         
-        # 1. PageViewer Sheet (Frontend Dynamic Dashboard)
+        # 1. PageViewer Sheet (Template View)
         ws_view = wb.active
         ws_view.title = "PageViewer"
         ws_view.views.sheetView[0].showGridLines = True
@@ -177,38 +209,27 @@ async def convert_pdf(file: UploadFile = File(...)):
         accent_font = Font(name="Calibri", size=12, bold=True, color="28A745")
 
         ws_view.merge_cells("B1:D1")
-        ws_view["B1"] = "ACTIVE PAGE DATA & CALCULATION TEMPLATE"
+        ws_view["B1"] = "ACTIVE PAGE DATA DASHBOARD"
         ws_view["B1"].font = white_title
         ws_view["B1"].fill = header_fill
         ws_view["B1"].alignment = Alignment(horizontal="center", vertical="center")
 
-        ws_view["B3"] = "Select Active Page:"
+        ws_view["B3"] = "Select Page No:"
         ws_view["B3"].font = label_font
         ws_view["C3"] = 1
         ws_view["C3"].font = Font(size=12, bold=True, color="007BFF")
-
-        max_p = len(pages_data)
-        dv = DataValidation(type="list", formula1=f'"{",".join(str(p) for p in range(1, max_p + 1))}"', allow_blank=False)
-        ws_view.add_data_validation(dv)
-        dv.add("C3")
 
         calc_rows = [
             ("Customer Name", '=XLOOKUP(C3, DataSheet!A:A, DataSheet!B:B, "N/A")'),
             ("Product Name", '=XLOOKUP(C3, DataSheet!A:A, DataSheet!C:C, "N/A")'),
             ("Quantity", '=XLOOKUP(C3, DataSheet!A:A, DataSheet!D:D, 0)'),
             ("Unit Price (₹)", '=XLOOKUP(C3, DataSheet!A:A, DataSheet!E:E, 0)'),
-            ("Base Amount (₹)", '=C7*C8'),
-            ("Discount Rate (%)", '=XLOOKUP(C3, DataSheet!A:A, DataSheet!G:G, 0)'),
-            ("Discount Amount (₹)", '=C9*(C10/100)'),
-            ("Taxable Amount (₹)", '=C9-C11'),
-            ("CGST Amount (9%) (₹)", '=C12*0.09'),
-            ("SGST Amount (9%) (₹)", '=C12*0.09'),
-            ("Total GST Amount (₹)", '=C13+C14'),
-            ("Extra Shipping (₹)", 0),
-            ("Gross Total (₹)", '=C12+C15+C16'),
-            ("Round Off Adjustment", '=ROUND(C17,0)-C17'),
-            ("FINAL PAYABLE (₹)", '=ROUND(C17,0)'),
-            ("Description", '=XLOOKUP(C3, DataSheet!A:A, DataSheet!M:M, "")')
+            ("Base Amount (₹)", '=XLOOKUP(C3, DataSheet!A:A, DataSheet!F:F, 0)'),
+            ("Discount", '=XLOOKUP(C3, DataSheet!A:A, DataSheet!G:G, "0")'),
+            ("Taxable Amount (₹)", '=XLOOKUP(C3, DataSheet!A:A, DataSheet!H:H, 0)'),
+            ("GST Amount (₹)", '=XLOOKUP(C3, DataSheet!A:A, DataSheet!I:I, 0)'),
+            ("FINAL PAYABLE (₹)", '=XLOOKUP(C3, DataSheet!A:A, DataSheet!J:J, 0)'),
+            ("Description", '=XLOOKUP(C3, DataSheet!A:A, DataSheet!K:K, "")')
         ]
 
         row_idx = 5
@@ -219,23 +240,28 @@ async def convert_pdf(file: UploadFile = File(...)):
             ws_view[f"C{row_idx}"].font = accent_font if "FINAL PAYABLE" in label else formula_font
             row_idx += 1
 
-        # 2. DataSheet (Backend Master Dataset)
+        # 2. DataSheet (Exact Extracted Raw Data)
         ws_data = wb.create_sheet(title="DataSheet")
-        headers = ["Page_No", "Customer_Name", "Product", "Quantity", "Unit_Price", "Base_Amount", "Discount_Pct", "Discount_Amount", "Taxable_Amount", "GST_Pct", "GST_Amount", "Money_Received", "Description"]
+        headers = [
+            "Page_No", "Customer_Name", "Product", "Quantity", "Unit_Price",
+            "Base_Amount", "Discount", "Taxable_Amount", "GST_Amount",
+            "Money_Received", "Description"
+        ]
         ws_data.append(headers)
 
         for idx, item in enumerate(pages_data, start=2):
-            base_amt = f"=D{idx}*E{idx}"
-            disc_amt = f"=F{idx}*(G{idx}/100)"
-            taxable_amt = f"=F{idx}-H{idx}"
-            gst_amt = f"=I{idx}*(J{idx}/100)"
-            net_amt = f"=I{idx}+K{idx}"
-
             ws_data.append([
-                item["Page_No"], item["Customer_Name"], item["Product"],
-                item["Quantity"], item["Unit_Price"], base_amt,
-                item["Discount_Pct"], disc_amt, taxable_amt,
-                item["GST_Pct"], gst_amt, net_amt, item["Description"]
+                item["Page_No"],
+                item["Customer_Name"],
+                item["Product"],
+                item["Quantity"],
+                item["Unit_Price"],
+                item["Base_Amount"],
+                item["Discount"],
+                item["Taxable_Amount"],
+                item["GST"],
+                item["Net_Total"],
+                item["Description"]
             ])
 
         output = io.BytesIO()
@@ -245,7 +271,7 @@ async def convert_pdf(file: UploadFile = File(...)):
         return StreamingResponse(
             output,
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            headers={'Content-Disposition': f'attachment; filename="{file.filename.replace(".pdf", "_CalculatedMaster.xlsx")}"'}
+            headers={'Content-Disposition': f'attachment; filename="{file.filename.replace(".pdf", "_Extracted.xlsx")}"'}
         )
 
     except Exception as e:
